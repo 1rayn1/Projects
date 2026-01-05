@@ -1,4 +1,5 @@
 import socket
+import json
 
 def send_line(conn, msg: str):
     if not msg.endswith("\n"):
@@ -16,11 +17,25 @@ def recv_line(conn) -> str:
         data += chunk
     return data.decode("utf-8").strip()
 
-def run_client(host="127.0.0.1", port=65432):
-    print(f"Connecting to {host}:{port} ...")
+def relay_send(conn, to_id, payload: str):
+    msg = {"to": to_id, "payload": payload}
+    send_line(conn, json.dumps(msg))
+
+def run_client(host="127.0.0.1", port=9000):
+    print(f"Connecting to relay {host}:{port} ...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
-        print("Connected. Waiting for game messages...")
+        print("Connected to relay.")
+
+        welcome_raw = recv_line(s)
+        welcome = json.loads(welcome_raw)
+        my_id = welcome["id"]
+        print("Connected. Your relay ID (P2):", my_id)
+        print("Share this ID with the host (P1).")
+
+        other_id = input("Enter host's relay ID (P1): ").strip()
+
+        print("Waiting for game messages...")
         while True:
             try:
                 line = recv_line(s)
@@ -28,25 +43,32 @@ def run_client(host="127.0.0.1", port=65432):
                 print(f"Disconnected: {e}")
                 break
 
-            if line.startswith("MSG:"):
-                msg = line[len("MSG:"):].strip()
-                print(msg)
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                print("Invalid message from relay:", line)
+                continue
 
-            elif line.startswith("PROMPT:"):
-                prompt = line[len("PROMPT:"):].strip()
-                # Ask user for action
+            payload = msg.get("payload", "")
+
+            if payload.startswith("MSG:"):
+                msg_text = payload[len("MSG:"):].strip()
+                print(msg_text)
+
+            elif payload.startswith("PROMPT:"):
+                prompt = payload[len("PROMPT:"):].strip()
                 resp = input(prompt)
-                send_line(s, f"ACTION:{resp}")
+                relay_send(s, other_id, f"ACTION:{resp}")
 
-            elif line.startswith("END:"):
+            elif payload.startswith("END:"):
                 print("Game ended by server.")
                 break
 
             else:
-                # Unknown message type, just print raw
-                print(line)
+                print(payload)
 
-host = input("Enter server IP (default 127.0.0.1): ").strip() or "127.0.0.1"
-port_str = input("Enter server port (default 65432): ").strip() or "65432"
-port = int(port_str)
-run_client(host, port)
+if __name__ == "__main__":
+    host = input("Relay IP (default 127.0.0.1): ").strip() or "127.0.0.1"
+    port_str = input("Relay port (default 9000): ").strip() or "9000"
+    port = int(port_str)
+    run_client(host, port)

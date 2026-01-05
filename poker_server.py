@@ -1,12 +1,9 @@
 import socket
 import threading
 import random
+import json
 from collections import Counter
 from itertools import combinations
-
-# -----------------------------
-# Card and Deck
-# -----------------------------
 
 suits = ["♠", "♥", "♦", "♣"]
 ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
@@ -44,10 +41,6 @@ class Deck:
 
     def deal(self, n=1):
         return [self.cards.pop() for _ in range(n)]
-
-# -----------------------------
-# Hand evaluation
-# -----------------------------
 
 def evaluate_hand(cards):
     values = sorted([c.value for c in cards], reverse=True)
@@ -97,10 +90,6 @@ def hand_description(score):
         return f"{name} ({high_rank} high)"
     return f"{name}, high card {high_rank}"
 
-# -----------------------------
-# Simple line-based protocol
-# -----------------------------
-
 def send_line(conn, msg: str):
     if not msg.endswith("\n"):
         msg += "\n"
@@ -111,34 +100,31 @@ def recv_line(conn) -> str:
     while True:
         chunk = conn.recv(1)
         if not chunk:
-            raise ConnectionError("Connection closed by client.")
+            raise ConnectionError("Connection closed.")
         if chunk == b"\n":
             break
         data += chunk
     return data.decode("utf-8").strip()
 
-# -----------------------------
-# Player I/O abstraction
-# -----------------------------
-
 def local_input(prompt: str) -> str:
     return input(prompt)
 
-def remote_input(conn, prompt: str) -> str:
-    # Send prompt, wait for reply
-    send_line(conn, f"PROMPT:{prompt}")
-    response = recv_line(conn)
-    # Client should send "ACTION:xxx"
-    if response.startswith("ACTION:"):
-        return response[len("ACTION:"):].strip()
-    return response.strip()
+def relay_send(sock, to_id, payload: str):
+    msg = {"to": to_id, "payload": payload}
+    send_line(sock, json.dumps(msg))
 
-def remote_message(conn, msg: str):
-    send_line(conn, f"MSG:{msg}")
+def remote_input(sock, to_id, prompt: str) -> str:
+    relay_send(sock, to_id, f"PROMPT:{prompt}")
+    while True:
+        raw = recv_line(sock)
+        msg = json.loads(raw)
+        payload = msg.get("payload", "")
+        if payload.startswith("ACTION:"):
+            return payload[len("ACTION:"):].strip()
+        # Ignore any other messages (shouldn't happen in this simple setup)
 
-# -----------------------------
-# Betting round
-# -----------------------------
+def remote_message(sock, to_id, msg: str):
+    relay_send(sock, to_id, f"MSG:{msg}")
 
 def betting_round(
     p1_chips, p2_chips, pot, stage,
@@ -172,13 +158,9 @@ def betting_round(
         if p2_message_func:
             p2_message_func(state_line)
 
-        # Early break if someone is all-in and contributions equal
         if (p1_all_in or p2_all_in) and p1_contrib == p2_contrib:
             break
 
-        # -------------------------
-        # PLAYER 1 TURN (host)
-        # -------------------------
         if p1_in and not p1_all_in:
             to_call = current_bet - p1_contrib
 
@@ -285,9 +267,6 @@ def betting_round(
                 print("Invalid action from P1.")
                 continue
 
-        # -------------------------
-        # PLAYER 2 TURN (remote)
-        # -------------------------
         if p2_in and not p2_all_in:
             to_call = current_bet - p2_contrib
 
@@ -394,9 +373,6 @@ def betting_round(
                 print("Invalid action from P2.")
                 continue
 
-        # -------------------------
-        # END CONDITION
-        # -------------------------
         if p1_contrib == p2_contrib and last_raiser is None:
             break
 
@@ -405,18 +381,14 @@ def betting_round(
 
     return pot, p1_chips, p2_chips, p1_in, p2_in
 
-# -----------------------------
-# Full game loop (server)
-# -----------------------------
-
-def play_full_game(conn):
-    player1_chips = 1000  # host
-    player2_chips = 1000  # remote
+def play_full_game(sock, my_id, other_id):
+    player1_chips = 1000 
+    player2_chips = 1000 
     hand_number = 1
 
-    print("\nWelcome to Texas Hold'em Poker (Heads-Up) - SERVER/PLAYER 1!")
-    send_line(conn, "MSG:Welcome to Texas Hold'em Poker (Heads-Up) - You are PLAYER 2.")
-    send_line(conn, f"MSG:Small blind: {SMALL_BLIND} | Big blind: {BIG_BLIND}")
+    print("\nWelcome to Texas Hold'em Poker (Heads-Up) - HOST/PLAYER 1!")
+    relay_send(sock, other_id, "MSG:Welcome to Texas Hold'em Poker (Heads-Up) - You are PLAYER 2.")
+    relay_send(sock, other_id, f"MSG:Small blind: {SMALL_BLIND} | Big blind: {BIG_BLIND}")
 
     while True:
         print("\n====================================")
@@ -424,37 +396,35 @@ def play_full_game(conn):
         print(f"Your chips (P1): {player1_chips} | Opponent chips (P2): {player2_chips}")
         print("====================================")
 
-        send_line(conn, "MSG:====================================")
-        send_line(conn, f"MSG:Hand #{hand_number}")
-        send_line(conn, f"MSG:Your chips (P2): {player2_chips} | Opponent chips (P1): {player1_chips}")
-        send_line(conn, "MSG:====================================")
+        relay_send(sock, other_id, "MSG:====================================")
+        relay_send(sock, other_id, f"MSG:Hand #{hand_number}")
+        relay_send(sock, other_id, f"MSG:Your chips (P2): {player2_chips} | Opponent chips (P1): {player1_chips}")
+        relay_send(sock, other_id, "MSG:====================================")
 
         if player1_chips <= 0:
             print("\nYou (P1) are out of chips. Player 2 wins the game.")
-            send_line(conn, "MSG:Opponent is out of chips. You win the game!")
+            relay_send(sock, other_id, "MSG:Opponent is out of chips. You win the game!")
             break
         if player2_chips <= 0:
             print("\nPlayer 2 is out of chips. You (P1) win the game!")
-            send_line(conn, "MSG:You are out of chips. Opponent wins the game.")
+            relay_send(sock, other_id, "MSG:You are out of chips. Opponent wins the game.")
             break
 
         choice = input("Press ENTER to play a hand, or type Q to quit: ").lower()
         if choice == "q":
             print("You quit the game.")
-            send_line(conn, "MSG:Host quit the game. Game over.")
+            relay_send(sock, other_id, "MSG:Host quit the game. Game over.")
             break
 
         deck = Deck()
         pot = 0
 
-        # Deal hole cards
         p1_cards = deck.deal(2)
         p2_cards = deck.deal(2)
 
         print("\nYour cards (P1):", p1_cards)
-        send_line(conn, f"MSG:Your cards (P2): {p2_cards}")
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
 
-        # Blinds: P1 = small blind, P2 = big blind
         sb = min(SMALL_BLIND, player1_chips)
         bb = min(BIG_BLIND, player2_chips)
 
@@ -470,11 +440,13 @@ def play_full_game(conn):
         print(f"Player 2 posts big blind: {bb}")
         print(f"Pot after blinds: {pot}")
 
-        send_line(conn, f"MSG:Opponent posts small blind: {sb}")
-        send_line(conn, f"MSG:You post big blind: {bb}")
-        send_line(conn, f"MSG:Pot after blinds: {pot}")
+        relay_send(sock, other_id, f"MSG:Opponent posts small blind: {sb}")
+        relay_send(sock, other_id, f"MSG:You post big blind: {bb}")
+        relay_send(sock, other_id, f"MSG:Pot after blinds: {pot}")
 
-        # PRE-FLOP
+        print("\nYour cards (P1):", p1_cards)
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
+
         pot, player1_chips, player2_chips, p1_in, p2_in = betting_round(
             player1_chips, player2_chips, pot,
             "pre-flop",
@@ -483,112 +455,117 @@ def play_full_game(conn):
             p2_contrib=p2_contrib,
             raise_used=False,
             p1_input_func=local_input,
-            p2_input_func=lambda prompt: remote_input(conn, prompt),
+            p2_input_func=lambda prompt: remote_input(sock, other_id, prompt),
             p1_message_func=lambda msg: print(msg),
-            p2_message_func=lambda msg: remote_message(conn, msg),
+            p2_message_func=lambda msg: remote_message(sock, other_id, msg),
         )
 
         if not p1_in:
             player2_chips += pot
             print(f"Player 2 wins the pot of {pot} (you folded pre-flop).")
-            send_line(conn, f"MSG:You win the pot of {pot} (opponent folded pre-flop).")
+            relay_send(sock, other_id, f"MSG:You win the pot of {pot} (opponent folded pre-flop).")
             hand_number += 1
             continue
         if not p2_in:
             player1_chips += pot
             print(f"You win the pot of {pot} (Player 2 folded pre-flop).")
-            send_line(conn, f"MSG:Opponent wins the pot of {pot} (you folded pre-flop).")
+            relay_send(sock, other_id, f"MSG:Opponent wins the pot of {pot} (you folded pre-flop).")
             hand_number += 1
             continue
 
-        # FLOP
+        print("\nYour cards (P1):", p1_cards)
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
+
         community = deck.deal(3)
         print("\nFlop:", community)
-        send_line(conn, f"MSG:Flop: {community}")
+        relay_send(sock, other_id, f"MSG:Flop: {community}")
 
         pot, player1_chips, player2_chips, p1_in, p2_in = betting_round(
             player1_chips, player2_chips, pot,
             "flop",
             p1_input_func=local_input,
-            p2_input_func=lambda prompt: remote_input(conn, prompt),
+            p2_input_func=lambda prompt: remote_input(sock, other_id, prompt),
             p1_message_func=lambda msg: print(msg),
-            p2_message_func=lambda msg: remote_message(conn, msg),
+            p2_message_func=lambda msg: remote_message(sock, other_id, msg),
         )
         if not p1_in:
             player2_chips += pot
             print(f"Player 2 wins the pot of {pot} (you folded on the flop).")
-            send_line(conn, f"MSG:You win the pot of {pot} (opponent folded on the flop).")
+            relay_send(sock, other_id, f"MSG:You win the pot of {pot} (opponent folded on the flop).")
             hand_number += 1
             continue
         if not p2_in:
             player1_chips += pot
             print(f"You win the pot of {pot} (Player 2 folded on the flop).")
-            send_line(conn, f"MSG:Opponent wins the pot of {pot} (you folded on the flop).")
+            relay_send(sock, other_id, f"MSG:Opponent wins the pot of {pot} (you folded on the flop).")
             hand_number += 1
             continue
 
-        # TURN
+        print("\nYour cards (P1):", p1_cards)
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
+
         community += deck.deal(1)
         print("\nTurn:", community)
-        send_line(conn, f"MSG:Turn: {community}")
+        relay_send(sock, other_id, f"MSG:Turn: {community}")
 
         pot, player1_chips, player2_chips, p1_in, p2_in = betting_round(
             player1_chips, player2_chips, pot,
             "turn",
             p1_input_func=local_input,
-            p2_input_func=lambda prompt: remote_input(conn, prompt),
+            p2_input_func=lambda prompt: remote_input(sock, other_id, prompt),
             p1_message_func=lambda msg: print(msg),
-            p2_message_func=lambda msg: remote_message(conn, msg),
+            p2_message_func=lambda msg: remote_message(sock, other_id, msg),
         )
         if not p1_in:
             player2_chips += pot
             print(f"Player 2 wins the pot of {pot} (you folded on the turn).")
-            send_line(conn, f"MSG:You win the pot of {pot} (opponent folded on the turn).")
+            relay_send(sock, other_id, f"MSG:You win the pot of {pot} (opponent folded on the turn).")
             hand_number += 1
             continue
         if not p2_in:
             player1_chips += pot
             print(f"You win the pot of {pot} (Player 2 folded on the turn).")
-            send_line(conn, f"MSG:Opponent wins the pot of {pot} (you folded on the turn).")
+            relay_send(sock, other_id, f"MSG:Opponent wins the pot of {pot} (you folded on the turn).")
             hand_number += 1
             continue
 
-        # RIVER
+        print("\nYour cards (P1):", p1_cards)
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
+
         community += deck.deal(1)
         print("\nRiver:", community)
-        send_line(conn, f"MSG:River: {community}")
+        relay_send(sock, other_id, f"MSG:River: {community}")
 
         pot, player1_chips, player2_chips, p1_in, p2_in = betting_round(
             player1_chips, player2_chips, pot,
             "river",
             p1_input_func=local_input,
-            p2_input_func=lambda prompt: remote_input(conn, prompt),
+            p2_input_func=lambda prompt: remote_input(sock, other_id, prompt),
             p1_message_func=lambda msg: print(msg),
-            p2_message_func=lambda msg: remote_message(conn, msg),
+            p2_message_func=lambda msg: remote_message(sock, other_id, msg),
         )
         if not p1_in:
             player2_chips += pot
             print(f"Player 2 wins the pot of {pot} (you folded on the river).")
-            send_line(conn, f"MSG:You win the pot of {pot} (opponent folded on the river).")
+            relay_send(sock, other_id, f"MSG:You win the pot of {pot} (opponent folded on the river).")
             hand_number += 1
             continue
         if not p2_in:
             player1_chips += pot
             print(f"You win the pot of {pot} (Player 2 folded on the river).")
-            send_line(conn, f"MSG:Opponent wins the pot of {pot} (you folded on the river).")
+            relay_send(sock, other_id, f"MSG:Opponent wins the pot of {pot} (you folded on the river).")
             hand_number += 1
             continue
 
-        # SHOWDOWN
         print("\n--- SHOWDOWN ---")
         print("Community cards:", community)
         print("Your cards (P1):", p1_cards)
         print("P2 cards:", p2_cards)
 
-        send_line(conn, "MSG:--- SHOWDOWN ---")
-        send_line(conn, f"MSG:Community cards: {community}")
-        send_line(conn, f"MSG:Your cards (P2): {p2_cards}")
-        send_line(conn, f"MSG:Opponent cards (P1): {p1_cards}")
+        relay_send(sock, other_id, "MSG:--- SHOWDOWN ---")
+        relay_send(sock, other_id, f"MSG:Community cards: {community}")
+        relay_send(sock, other_id, f"MSG:Your cards (P2): {p2_cards}")
+        relay_send(sock, other_id, f"MSG:Opponent cards (P1): {p1_cards}")
 
         p1_best = best_five_of_seven(p1_cards + community)
         p2_best = best_five_of_seven(p2_cards + community)
@@ -596,41 +573,49 @@ def play_full_game(conn):
         print("\nYour hand (P1):", hand_description(p1_best))
         print("P2 hand:", hand_description(p2_best))
 
-        send_line(conn, f"MSG:Your hand: {hand_description(p2_best)}")
-        send_line(conn, f"MSG:Opponent hand: {hand_description(p1_best)}")
+        relay_send(sock, other_id, f"MSG:Your hand: {hand_description(p2_best)}")
+        relay_send(sock, other_id, f"MSG:Opponent hand: {hand_description(p1_best)}")
 
         if p1_best > p2_best:
             print(f"\nYou win the pot of {pot}!")
-            send_line(conn, f"MSG:Opponent wins the pot of {pot}.")
+            relay_send(sock, other_id, f"MSG:Opponent wins the pot of {pot}.")
             player1_chips += pot
         elif p2_best > p1_best:
             print(f"\nPlayer 2 wins the pot of {pot}.")
-            send_line(conn, f"MSG:You win the pot of {pot}!")
+            relay_send(sock, other_id, f"MSG:You win the pot of {pot}!")
             player2_chips += pot
         else:
             print("\nIt's a tie! Pot is split.")
-            send_line(conn, "MSG:It's a tie! Pot is split.")
+            relay_send(sock, other_id, "MSG:It's a tie! Pot is split.")
             player1_chips += pot // 2
             player2_chips += pot // 2
 
         hand_number += 1
 
     print("\nThanks for playing!")
-    send_line(conn, "MSG:Thanks for playing!")
-    send_line(conn, "END:")
+    relay_send(sock, other_id, "MSG:Thanks for playing!")
+    relay_send(sock, other_id, "END:")
 
-def run_server(host="0.0.0.0", port=65432):
-    print(f"Starting server on {host}:{port} ...")
+def connect_to_relay(host="127.0.0.1", port=9000):
+    print(f"Connecting to relay at {host}:{port} ...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, port))
-        s.listen(1)
-        print("Waiting for a connection...")
-        conn, addr = s.accept()
-        with conn:
-            print(f"Connected by {addr}")
-            try:
-                play_full_game(conn)
-            except ConnectionError as e:
-                print(f"Connection lost: {e}")
+        s.connect((host, port))
+        print("Connected to relay.")
 
-run_server()
+        welcome_raw = recv_line(s)
+        welcome = json.loads(welcome_raw)
+        my_id = welcome["id"]
+        print(f"My relay ID (HOST / P1): {my_id}")
+
+        other_id = input("Enter opponent's relay ID (P2): ").strip()
+
+        try:
+            play_full_game(s, my_id, other_id)
+        except ConnectionError as e:
+            print(f"Connection lost: {e}")
+
+if __name__ == "__main__":
+    relay_ip = input("Relay IP (default 127.0.0.1): ").strip() or "127.0.0.1"
+    relay_port_str = input("Relay port (default 9000): ").strip() or "9000"
+    relay_port = int(relay_port_str)
+    connect_to_relay(relay_ip, relay_port)
