@@ -34,8 +34,26 @@ async def handle_client(reader, writer):
                 print(f"[!] Malformed message from {client_id}: {msg}")
                 continue
 
+            # Special target 'server' -> handle server commands
+            if target == "server":
+                # For now only support LIST
+                if isinstance(payload, str) and payload.upper() == "LIST":
+                    ids = list(clients.keys())
+                    out = {"from": "server", "payload": "LIST:" + ",".join(ids)}
+                    writer.write((json.dumps(out) + "\n").encode("utf-8"))
+                    await writer.drain()
+                else:
+                    out = {"from": "server", "payload": "UNKNOWN_COMMAND"}
+                    writer.write((json.dumps(out) + "\n").encode("utf-8"))
+                    await writer.drain()
+                continue
+
             if target not in clients:
                 print(f"[!] Target {target} not connected (from {client_id})")
+                # Inform sender
+                out = {"from": "server", "payload": f"ERROR:Target {target} not connected"}
+                writer.write((json.dumps(out) + "\n").encode("utf-8"))
+                await writer.drain()
                 continue
 
             out = {

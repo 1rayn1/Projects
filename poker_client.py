@@ -33,7 +33,27 @@ def run_client(host="127.0.0.1", port=9000):
         print("Connected. Your relay ID (P2):", my_id)
         print("Share this ID with the host (P1).")
 
-        other_id = input("Enter host's relay ID (P1): ").strip()
+        # Allow user to request a list of connected clients from the relay
+        while True:
+            other_id = input("Enter host's relay ID (P1) or type 'list' to see connected IDs: ").strip()
+            if other_id.lower() == "list":
+                # ask relay for list
+                relay_send(s, "server", "LIST")
+                # wait for a LIST response
+                while True:
+                    line = recv_line(s)
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    payload = msg.get("payload", "")
+                    if payload.startswith("LIST:"):
+                        ids = payload[len("LIST:"):]
+                        print("Connected IDs:", ids)
+                        break
+                continue
+            if other_id:
+                break
 
         print("Waiting for game messages...")
         while True:

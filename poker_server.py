@@ -1,5 +1,4 @@
 import socket
-import threading
 import random
 import json
 from collections import Counter
@@ -129,7 +128,6 @@ def remote_message(sock, to_id, msg: str):
 def betting_round(
     p1_chips, p2_chips, pot, stage,
     current_bet=0, p1_contrib=0, p2_contrib=0,
-    raise_used=False,
     p1_input_func=None,
     p2_input_func=None,
     p1_message_func=None,
@@ -165,15 +163,9 @@ def betting_round(
             to_call = current_bet - p1_contrib
 
             if to_call > 0:
-                if raise_used or p1_chips <= to_call:
-                    prompt = "P1: call / fold (or 'all-in' to call if enough): "
-                else:
-                    prompt = "P1: call / raise / fold (or 'all-in'): "
+                prompt = "P1: call / raise / fold (or 'all-in'): "
             else:
-                if raise_used:
-                    prompt = "P1: check / fold (or 'all-in'): "
-                else:
-                    prompt = "P1: check / bet / fold (or 'all-in'): "
+                prompt = "P1: check / bet / fold (or 'all-in'): "
 
             action = p1_input_func(prompt).lower()
 
@@ -198,7 +190,6 @@ def betting_round(
                 if p1_contrib > current_bet:
                     current_bet = p1_contrib
                     last_raiser = "p1"
-                    raise_used = True
                 p1_all_in = True
 
             elif action == "call":
@@ -229,7 +220,7 @@ def betting_round(
                 if p2_message_func:
                     p2_message_func("Opponent checks.")
 
-            elif action in ("bet", "raise") and not raise_used:
+            elif action in ("bet", "raise"):
                 try:
                     amt_str = p1_input_func("P1: Enter raise amount: ")
                     raise_amt = int(amt_str)
@@ -250,7 +241,6 @@ def betting_round(
                 pot += raise_amt
                 current_bet = p1_contrib
                 last_raiser = "p1"
-                raise_used = True
                 print(f"P1 raises to {current_bet}.")
                 if p1_message_func:
                     p1_message_func(f"You raise to {current_bet}.")
@@ -271,15 +261,9 @@ def betting_round(
             to_call = current_bet - p2_contrib
 
             if to_call > 0:
-                if raise_used or p2_chips <= to_call:
-                    prompt = "P2: call / fold (or 'all-in' to call if enough): "
-                else:
-                    prompt = "P2: call / raise / fold (or 'all-in'): "
+                prompt = "P2: call / raise / fold (or 'all-in'): "
             else:
-                if raise_used:
-                    prompt = "P2: check / fold (or 'all-in'): "
-                else:
-                    prompt = "P2: check / bet / fold (or 'all-in'): "
+                prompt = "P2: check / bet / fold (or 'all-in'): "
 
             action = p2_input_func(prompt).lower()
 
@@ -304,7 +288,6 @@ def betting_round(
                 if p2_contrib > current_bet:
                     current_bet = p2_contrib
                     last_raiser = "p2"
-                    raise_used = True
                 p2_all_in = True
 
             elif action == "call":
@@ -335,7 +318,7 @@ def betting_round(
                 if p1_message_func:
                     p1_message_func("Opponent checks.")
 
-            elif action in ("bet", "raise") and not raise_used:
+            elif action in ("bet", "raise"):
                 try:
                     amt_str = p2_input_func("P2: Enter raise amount: ")
                     raise_amt = int(amt_str)
@@ -356,7 +339,6 @@ def betting_round(
                 pot += raise_amt
                 current_bet = p2_contrib
                 last_raiser = "p2"
-                raise_used = True
                 print(f"P2 raises to {current_bet}.")
                 if p2_message_func:
                     p2_message_func(f"You raise to {current_bet}.")
@@ -453,7 +435,6 @@ def play_full_game(sock, my_id, other_id):
             current_bet=current_bet,
             p1_contrib=p1_contrib,
             p2_contrib=p2_contrib,
-            raise_used=False,
             p1_input_func=local_input,
             p2_input_func=lambda prompt: remote_input(sock, other_id, prompt),
             p1_message_func=lambda msg: print(msg),
@@ -614,8 +595,8 @@ def connect_to_relay(host="127.0.0.1", port=9000):
         except ConnectionError as e:
             print(f"Connection lost: {e}")
 
-if __name__ == "__main__":
-    relay_ip = input("Relay IP (default 127.0.0.1): ").strip() or "127.0.0.1"
-    relay_port_str = input("Relay port (default 9000): ").strip() or "9000"
-    relay_port = int(relay_port_str)
-    connect_to_relay(relay_ip, relay_port)
+
+relay_ip = input("Relay IP (default 127.0.0.1): ").strip() or "127.0.0.1"
+relay_port_str = input("Relay port (default 9000): ").strip() or "9000"
+relay_port = int(relay_port_str)
+connect_to_relay(relay_ip, relay_port)
